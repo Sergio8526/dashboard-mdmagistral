@@ -86,7 +86,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Configuracion API ─────────────────────────────────────────────────────────
-TOKEN   = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJTaGFyZE5hbWUiOiJMYWJNRE1hZ2lzdHJhbCIsImV4cCI6MTgzOTM4OTU1MX0.6YEmXKTB5VrRm8NcAyhCsQmOlenbW6Y9EO5En3nUca8"
+TOKEN   = st.secrets["TOKEN"]
 BASE    = "https://intelnova-api.azurewebsites.net/api"
 META_MD = 200_000
 META_PV = 200_000
