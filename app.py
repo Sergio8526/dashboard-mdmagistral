@@ -86,10 +86,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Configuracion API ─────────────────────────────────────────────────────────
-TOKEN   = st.secrets["TOKEN"]
-BASE    = "https://intelnova-api.azurewebsites.net/api"
-META_MD = 200_000
-META_PV = 200_000
+TOKEN      = st.secrets["TOKEN"]
+BASE       = "https://intelnova-api.azurewebsites.net/api"
 UMBRAL_MIN = 0.80
 UMBRAL_MAX = 0.99
 
@@ -113,48 +111,67 @@ def api_post(endpoint, payload):
     with urllib.request.urlopen(req, context=ctx) as r:
         return json.loads(r.read())
 
-def calcular_comision(cob_med, cob_pdv):
+def calcular_comision(cob_med, cob_pdv, meta_md, meta_pdv):
     cob_comb = (cob_med + cob_pdv) / 2
     if cob_comb < UMBRAL_MIN:
         return 0, 0, 0, cob_comb, "NO GANA"
     if cob_comb >= UMBRAL_MAX:
-        com_med = META_MD
-        com_pdv = META_PV
+        com_med = meta_md
+        com_pdv = meta_pdv
         estado  = "COMPLETA"
     else:
-        com_med = round(cob_med * META_MD)
-        com_pdv = round(cob_pdv * META_PV)
+        com_med = round(cob_med * meta_md)
+        com_pdv = round(cob_pdv * meta_pdv)
         estado  = "PARCIAL"
     return com_med, com_pdv, com_med + com_pdv, cob_comb, estado
 
-# ── Carga de datos (con cache para no llamar la API en cada click) ─────────────
-@st.cache_data(ttl=300)  # cache de 5 minutos
-def cargar_datos():
+# ── Carga de ciclos disponibles ───────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def cargar_ciclos():
+    ciclos = api_get("CyclesReport")
+    return sorted(ciclos, key=lambda x: x["id"], reverse=True)  # mas reciente primero
+
+# ── Carga de cobertura por ciclo ──────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def cargar_cobertura(ciclo_id):
+    from collections import defaultdict
+
     # Medicos
-    med_raw      = api_post("CoverageReport", {"VisitTargetType": 0, "IsFrequecy": True})
+    med_raw       = api_post("CoverageReport", {"VisitTargetType": 0, "IsFrequecy": True})
     med_registros = med_raw.get("answerQuery", [])
 
-    from collections import defaultdict
     reps_med = defaultdict(lambda: {"panel": 0, "visitados": 0, "frecuencia": 0, "region": ""})
     for reg in med_registros:
         nombre = f"{reg['userLastname']} {reg['userName']}"
         reps_med[nombre]["panel"] += 1
         reps_med[nombre]["region"] = reg.get("region") or ""
-        if reg.get("contact") and reg["contact"] > 0:
-            reps_med[nombre]["visitados"] += 1
-        reps_med[nombre]["frecuencia"] += reg.get("frecuency") or 0
+        ciclo_data = next((c for c in reg.get("cycles", []) if c["id"] == ciclo_id), None)
+        if ciclo_data is not None:
+            if ciclo_data["value"] > 0:
+                reps_med[nombre]["visitados"] += 1
+            reps_med[nombre]["frecuencia"] += ciclo_data["value"]
+        else:
+            if reg.get("contact") and reg["contact"] > 0:
+                reps_med[nombre]["visitados"] += 1
+            reps_med[nombre]["frecuencia"] += reg.get("frecuency") or 0
 
     # PDV
-    pdv_raw      = api_post("CoverageReport", {"VisitTargetType": 1, "IsFrequecy": True})
+    pdv_raw       = api_post("CoverageReport", {"VisitTargetType": 1, "IsFrequecy": True})
     pdv_registros = pdv_raw.get("answerQuery", [])
 
     reps_pdv = defaultdict(lambda: {"panel": 0, "visitados": 0, "frecuencia": 0})
     for reg in pdv_registros:
         nombre = f"{reg['userLastname']} {reg['userName']}"
         reps_pdv[nombre]["panel"] += 1
-        if reg.get("contact") and reg["contact"] > 0:
-            reps_pdv[nombre]["visitados"] += 1
-        reps_pdv[nombre]["frecuencia"] += reg.get("frecuency") or 0
+        ciclo_data = next((c for c in reg.get("cycles", []) if c["id"] == ciclo_id), None)
+        if ciclo_data is not None:
+            if ciclo_data["value"] > 0:
+                reps_pdv[nombre]["visitados"] += 1
+            reps_pdv[nombre]["frecuencia"] += ciclo_data["value"]
+        else:
+            if reg.get("contact") and reg["contact"] > 0:
+                reps_pdv[nombre]["visitados"] += 1
+            reps_pdv[nombre]["frecuencia"] += reg.get("frecuency") or 0
 
     # Consolidar
     todos = sorted(set(list(reps_med.keys()) + list(reps_pdv.keys())))
@@ -163,39 +180,69 @@ def cargar_datos():
         m = reps_med.get(rep, {"panel": 0, "visitados": 0, "frecuencia": 0, "region": ""})
         p = reps_pdv.get(rep, {"panel": 0, "visitados": 0, "frecuencia": 0})
 
-        cob_med = m["visitados"] / m["panel"] if m["panel"] > 0 else 0
-        cob_pdv = p["visitados"] / p["panel"] if p["panel"] > 0 else 0
+        cob_med  = m["visitados"] / m["panel"] if m["panel"] > 0 else 0
+        cob_pdv  = p["visitados"] / p["panel"] if p["panel"] > 0 else 0
         prom_med = round(m["frecuencia"] / m["panel"], 2) if m["panel"] > 0 else 0
         prom_pdv = round(p["frecuencia"] / p["panel"], 2) if p["panel"] > 0 else 0
 
-        com_med, com_pdv, com_total, cob_comb, estado = calcular_comision(cob_med, cob_pdv)
-
         filas.append({
-            "Representante":      rep,
-            "Region":             m["region"],
-            "Panel_Med":          m["panel"],
-            "Visit_Med":          m["visitados"],
-            "Cob_Med":            round(cob_med, 4),
-            "Frec_Med":           m["frecuencia"],
-            "Prom_Med":           prom_med,
-            "Panel_PDV":          p["panel"],
-            "Visit_PDV":          p["visitados"],
-            "Cob_PDV":            round(cob_pdv, 4),
-            "Frec_PDV":           p["frecuencia"],
-            "Prom_PDV":           prom_pdv,
-            "Pct_Cumplimiento":   round(cob_comb, 4),
-            "Comision_Med":       com_med,
-            "Comision_PDV":       com_pdv,
-            "Comision_Total":     com_total,
-            "Estado":             estado,
-            "Meta_Total":         META_MD + META_PV,
+            "Representante": rep,
+            "Region":        m["region"],
+            "Panel_Med":     m["panel"],
+            "Visit_Med":     m["visitados"],
+            "Cob_Med":       round(cob_med, 4),
+            "Frec_Med":      m["frecuencia"],
+            "Prom_Med":      prom_med,
+            "Panel_PDV":     p["panel"],
+            "Visit_PDV":     p["visitados"],
+            "Cob_PDV":       round(cob_pdv, 4),
+            "Frec_PDV":      p["frecuencia"],
+            "Prom_PDV":      prom_pdv,
         })
 
+    return pd.DataFrame(filas)
+
+def agregar_comisiones(df, meta_md, meta_pdv):
+    filas = []
+    for _, row in df.iterrows():
+        com_med, com_pdv, com_total, cob_comb, estado = calcular_comision(
+            row["Cob_Med"], row["Cob_PDV"], meta_md, meta_pdv
+        )
+        filas.append({
+            **row.to_dict(),
+            "Pct_Cumplimiento": round(cob_comb, 4),
+            "Comision_Med":     com_med,
+            "Comision_PDV":     com_pdv,
+            "Comision_Total":   com_total,
+            "Estado":           estado,
+            "Meta_Total":       meta_md + meta_pdv,
+        })
     return pd.DataFrame(filas)
 
 # ── SIDEBAR ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 💊 MD Magistral")
+    st.markdown("---")
+
+    # Selector de ciclo
+    st.markdown("**Ciclo**")
+    try:
+        ciclos_lista   = cargar_ciclos()
+        nombres_ciclos = [c["name"] for c in ciclos_lista]
+        ciclo_sel_nombre = st.selectbox("Ciclo", nombres_ciclos, label_visibility="collapsed")
+        ciclo_sel_id   = next(c["id"] for c in ciclos_lista if c["name"] == ciclo_sel_nombre)
+    except Exception:
+        st.warning("No se pudieron cargar los ciclos")
+        ciclo_sel_id     = None
+        ciclo_sel_nombre = "Ciclo actual"
+
+    st.markdown("---")
+
+    # Metas de comision
+    st.markdown("**Metas de Comisión**")
+    META_MD = st.number_input("Meta Médicos ($)", value=200_000, step=10_000, min_value=0)
+    META_PV = st.number_input("Meta PDV ($)",     value=200_000, step=10_000, min_value=0)
+
     st.markdown("---")
 
     # Navegacion
@@ -219,7 +266,8 @@ with st.sidebar:
 # ── CARGA DE DATOS ────────────────────────────────────────────────────────────
 with st.spinner("Cargando datos desde Intelapp..."):
     try:
-        df = cargar_datos()
+        df_base   = cargar_cobertura(ciclo_sel_id)
+        df        = agregar_comisiones(df_base, META_MD, META_PV)
         error_api = False
     except Exception as e:
         error_api = True
@@ -241,7 +289,7 @@ if pagina == "Resumen Ejecutivo":
     st.markdown(f"""
     <div class="header-box">
         <div class="header-title">Tablero de Comisiones — MD Magistral</div>
-        <div class="header-sub">Resumen ejecutivo del equipo de ventas</div>
+        <div class="header-sub">Resumen ejecutivo del equipo de ventas &nbsp;|&nbsp; {ciclo_sel_nombre}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -450,10 +498,10 @@ if pagina == "Resumen Ejecutivo":
 # ════════════════════════════════════════════════════════════════════════════════
 elif pagina == "Detalle Representante":
 
-    st.markdown("""
+    st.markdown(f"""
     <div class="header-box">
         <div class="header-title">Detalle por Representante</div>
-        <div class="header-sub">Selecciona un representante para ver sus indicadores</div>
+        <div class="header-sub">Selecciona un representante para ver sus indicadores &nbsp;|&nbsp; {ciclo_sel_nombre}</div>
     </div>
     """, unsafe_allow_html=True)
 
