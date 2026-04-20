@@ -128,14 +128,17 @@ def calcular_comision(cob_med, cob_pdv, meta_md, meta_pdv):
 # ── Carga de ciclos disponibles (1 llamada, cache 1 hora) ─────────────────────
 @st.cache_data(ttl=3600)
 def cargar_ciclos():
-    from datetime import timezone
     ciclos = api_get("CyclesReport")
-    hoy    = datetime.now(timezone.utc)
+    hoy    = datetime.now().replace(tzinfo=None)
     # Solo ciclos que ya iniciaron (excluye futuros)
-    ciclos_validos = [
-        c for c in ciclos
-        if datetime.fromisoformat(c["initialDate"].replace("Z", "+00:00")) <= hoy
-    ]
+    ciclos_validos = []
+    for c in ciclos:
+        try:
+            fecha_inicio = datetime.fromisoformat(c["initialDate"].split("T")[0])
+            if fecha_inicio <= hoy:
+                ciclos_validos.append(c)
+        except Exception:
+            ciclos_validos.append(c)  # si no se puede parsear la fecha, incluirlo
     return sorted(ciclos_validos, key=lambda x: x["id"], reverse=True)
 
 # ── Carga RAW de cobertura (1 sola llamada a la API, cache 5 min) ─────────────
