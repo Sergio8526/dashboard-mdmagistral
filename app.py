@@ -125,55 +125,51 @@ def calcular_comision(cob_med, cob_pdv, meta_md, meta_pdv):
         estado  = "PARCIAL"
     return com_med, com_pdv, com_med + com_pdv, cob_comb, estado
 
-# ── Carga de ciclos disponibles ───────────────────────────────────────────────
+# ── Carga de ciclos disponibles (1 llamada, cache 1 hora) ─────────────────────
 @st.cache_data(ttl=3600)
 def cargar_ciclos():
     ciclos = api_get("CyclesReport")
-    return sorted(ciclos, key=lambda x: x["id"], reverse=True)  # mas reciente primero
+    return sorted(ciclos, key=lambda x: x["id"], reverse=True)
 
-# ── Carga de cobertura por ciclo ──────────────────────────────────────────────
+# ── Carga RAW de cobertura (1 sola llamada a la API, cache 5 min) ─────────────
 @st.cache_data(ttl=300)
-def cargar_cobertura(ciclo_id):
+def cargar_raw_cobertura():
+    med_raw = api_post("CoverageReport", {"VisitTargetType": 0, "IsFrequecy": True})
+    pdv_raw = api_post("CoverageReport", {"VisitTargetType": 1, "IsFrequecy": True})
+    return med_raw.get("answerQuery", []), pdv_raw.get("answerQuery", [])
+
+# ── Filtra y procesa los datos crudos para el ciclo seleccionado ──────────────
+def procesar_cobertura(med_registros, pdv_registros, ciclo_id):
     from collections import defaultdict
 
-    # Medicos
-    med_raw       = api_post("CoverageReport", {"VisitTargetType": 0, "IsFrequecy": True})
-    med_registros = med_raw.get("answerQuery", [])
+    def visitas_ciclo(reg, ciclo_id):
+        """Devuelve (visitado: bool, frecuencia: float) para el ciclo dado."""
+        ciclo_data = next((c for c in reg.get("cycles", []) if c["id"] == ciclo_id), None)
+        if ciclo_data is not None:
+            return ciclo_data["value"] > 0, ciclo_data["value"]
+        # Ciclo activo actual — no esta en cycles[] todavia
+        visitado = bool(reg.get("contact") and reg["contact"] > 0)
+        return visitado, reg.get("frecuency") or 0
 
     reps_med = defaultdict(lambda: {"panel": 0, "visitados": 0, "frecuencia": 0, "region": ""})
     for reg in med_registros:
         nombre = f"{reg['userLastname']} {reg['userName']}"
-        reps_med[nombre]["panel"] += 1
-        reps_med[nombre]["region"] = reg.get("region") or ""
-        ciclo_data = next((c for c in reg.get("cycles", []) if c["id"] == ciclo_id), None)
-        if ciclo_data is not None:
-            if ciclo_data["value"] > 0:
-                reps_med[nombre]["visitados"] += 1
-            reps_med[nombre]["frecuencia"] += ciclo_data["value"]
-        else:
-            if reg.get("contact") and reg["contact"] > 0:
-                reps_med[nombre]["visitados"] += 1
-            reps_med[nombre]["frecuencia"] += reg.get("frecuency") or 0
-
-    # PDV
-    pdv_raw       = api_post("CoverageReport", {"VisitTargetType": 1, "IsFrequecy": True})
-    pdv_registros = pdv_raw.get("answerQuery", [])
+        reps_med[nombre]["panel"]  += 1
+        reps_med[nombre]["region"]  = reg.get("region") or ""
+        visitado, frec = visitas_ciclo(reg, ciclo_id)
+        if visitado:
+            reps_med[nombre]["visitados"] += 1
+        reps_med[nombre]["frecuencia"] += frec
 
     reps_pdv = defaultdict(lambda: {"panel": 0, "visitados": 0, "frecuencia": 0})
     for reg in pdv_registros:
         nombre = f"{reg['userLastname']} {reg['userName']}"
         reps_pdv[nombre]["panel"] += 1
-        ciclo_data = next((c for c in reg.get("cycles", []) if c["id"] == ciclo_id), None)
-        if ciclo_data is not None:
-            if ciclo_data["value"] > 0:
-                reps_pdv[nombre]["visitados"] += 1
-            reps_pdv[nombre]["frecuencia"] += ciclo_data["value"]
-        else:
-            if reg.get("contact") and reg["contact"] > 0:
-                reps_pdv[nombre]["visitados"] += 1
-            reps_pdv[nombre]["frecuencia"] += reg.get("frecuency") or 0
+        visitado, frec = visitas_ciclo(reg, ciclo_id)
+        if visitado:
+            reps_pdv[nombre]["visitados"] += 1
+        reps_pdv[nombre]["frecuencia"] += frec
 
-    # Consolidar
     todos = sorted(set(list(reps_med.keys()) + list(reps_pdv.keys())))
     filas = []
     for rep in todos:
@@ -266,8 +262,9 @@ with st.sidebar:
 # ── CARGA DE DATOS ────────────────────────────────────────────────────────────
 with st.spinner("Cargando datos desde Intelapp..."):
     try:
-        df_base   = cargar_cobertura(ciclo_sel_id)
-        df        = agregar_comisiones(df_base, META_MD, META_PV)
+        med_raw, pdv_raw = cargar_raw_cobertura()          # 1 sola llamada a la API
+        df_base = procesar_cobertura(med_raw, pdv_raw, ciclo_sel_id)  # filtro en memoria
+        df      = agregar_comisiones(df_base, META_MD, META_PV)
         error_api = False
     except Exception as e:
         error_api = True
