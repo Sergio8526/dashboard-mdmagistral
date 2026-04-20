@@ -155,10 +155,11 @@ def procesar_cobertura(med_registros, pdv_registros, ciclo_id):
     def visitas_ciclo(reg, ciclo_id):
         """Devuelve (visitado: bool, frecuencia: float) para el ciclo dado."""
         ciclo_data = next((c for c in reg.get("cycles", []) if c["id"] == ciclo_id), None)
-        if ciclo_data is not None:
-            val = ciclo_data.get("value") or 0   # value puede llegar null en ciclo activo
+        # Solo usar cycles[] si el ciclo ya cerro (value no es null)
+        if ciclo_data is not None and ciclo_data.get("value") is not None:
+            val = float(ciclo_data["value"])
             return val > 0, val
-        # Ciclo activo actual — usa el campo contact en tiempo real
+        # Ciclo activo o sin datos consolidados — usa contact en tiempo real
         visitado = bool(reg.get("contact") and reg["contact"] > 0)
         return visitado, reg.get("frecuency") or 0
 
