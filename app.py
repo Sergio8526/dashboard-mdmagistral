@@ -128,8 +128,15 @@ def calcular_comision(cob_med, cob_pdv, meta_md, meta_pdv):
 # ── Carga de ciclos disponibles (1 llamada, cache 1 hora) ─────────────────────
 @st.cache_data(ttl=3600)
 def cargar_ciclos():
+    from datetime import timezone
     ciclos = api_get("CyclesReport")
-    return sorted(ciclos, key=lambda x: x["id"], reverse=True)
+    hoy    = datetime.now(timezone.utc)
+    # Solo ciclos que ya iniciaron (excluye futuros)
+    ciclos_validos = [
+        c for c in ciclos
+        if datetime.fromisoformat(c["initialDate"].replace("Z", "+00:00")) <= hoy
+    ]
+    return sorted(ciclos_validos, key=lambda x: x["id"], reverse=True)
 
 # ── Carga RAW de cobertura (1 sola llamada a la API, cache 5 min) ─────────────
 @st.cache_data(ttl=300)
@@ -146,8 +153,9 @@ def procesar_cobertura(med_registros, pdv_registros, ciclo_id):
         """Devuelve (visitado: bool, frecuencia: float) para el ciclo dado."""
         ciclo_data = next((c for c in reg.get("cycles", []) if c["id"] == ciclo_id), None)
         if ciclo_data is not None:
-            return ciclo_data["value"] > 0, ciclo_data["value"]
-        # Ciclo activo actual — no esta en cycles[] todavia
+            val = ciclo_data.get("value") or 0   # value puede llegar null en ciclo activo
+            return val > 0, val
+        # Ciclo activo actual — usa el campo contact en tiempo real
         visitado = bool(reg.get("contact") and reg["contact"] > 0)
         return visitado, reg.get("frecuency") or 0
 
