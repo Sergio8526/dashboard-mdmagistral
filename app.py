@@ -501,6 +501,32 @@ if pagina == "Resumen Ejecutivo":
     t3.metric("Total Comisiones",    f"${df_filtrado['Comision_Total'].sum():,.0f}")
     t4.metric("Meta Maxima Equipo",  f"${total_reps*(META_MD+META_PV):,.0f}")
 
+    # ── Boton de descarga Excel ───────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    import io
+    buffer = io.BytesIO()
+    df_export = df_filtrado[[
+        "Representante", "Region",
+        "Panel_Med", "Visit_Med", "Cob_Med",
+        "Panel_PDV", "Visit_PDV", "Cob_PDV",
+        "Pct_Cumplimiento", "Comision_Med", "Comision_PDV", "Comision_Total", "Estado"
+    ]].copy()
+    df_export.columns = [
+        "Representante", "Region",
+        "Panel Medicos", "Visitados Med", "Cobertura Med",
+        "Panel PDV", "Visitados PDV", "Cobertura PDV",
+        "% Cumplimiento", "Comision Medicos", "Comision PDV", "Comision Total", "Estado"
+    ]
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df_export.to_excel(writer, index=False, sheet_name="Comisiones")
+    st.download_button(
+        label="Descargar reporte en Excel",
+        data=buffer.getvalue(),
+        file_name=f"comisiones_{ciclo_sel_nombre.replace(' ', '_')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # PAGINA 2 — DETALLE POR REPRESENTANTE
